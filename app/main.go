@@ -25,7 +25,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		podName, _ = os.Hostname()
 	}
 
-	fmt.Fprintf(w, "Preview environment is live — testing the pipeline\n\n")
+	fmt.Fprintf(w, "Preview environment is live — testing the pipeline for the second time\n\n")
 	fmt.Fprintf(w, "PR number  : %s\n", prNumber)
 	fmt.Fprintf(w, "Git SHA    : %s\n", gitSha)
 	fmt.Fprintf(w, "Namespace  : %s\n", namespace)
