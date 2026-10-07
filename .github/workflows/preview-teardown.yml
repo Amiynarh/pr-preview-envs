@@ -9,7 +9,7 @@ permissions:
   id-token: write
 
 env:
-  PROJECT_ID: aminalawal
+  PROJECT_ID: YOUR_PROJECT_ID
   CLUSTER_NAME: pr-preview-cluster
   CLUSTER_ZONE: europe-west2-a
 

@@ -13,7 +13,7 @@ permissions:
   pull-requests: read
 
 env:
-  PROJECT_ID: aminalawal
+  PROJECT_ID: YOUR_PROJECT_ID
   CLUSTER_NAME: pr-preview-cluster
   CLUSTER_ZONE: europe-west2-a
   # Delete environments older than this even if the PR is still open

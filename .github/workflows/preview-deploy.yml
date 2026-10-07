@@ -17,7 +17,7 @@ permissions:
   pull-requests: write
 
 env:
-  PROJECT_ID: aminalawal
+  PROJECT_ID: YOUR_PROJECT_ID
   REGION: europe-west2
   CLUSTER_NAME: pr-preview-cluster
   CLUSTER_ZONE: europe-west2-a
