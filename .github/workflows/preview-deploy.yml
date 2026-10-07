@@ -24,7 +24,7 @@ env:
   REPOSITORY: pr-preview
   IMAGE_NAME: preview-app
   PREVIEW_DOMAIN: preview.aminalawal.com
-  CLUSTER_ISSUER: letsencrypt-staging
+  CLUSTER_ISSUER: letsencrypt-prod
 
 jobs:
   deploy:
