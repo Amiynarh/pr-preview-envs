@@ -1,0 +1,115 @@
+name: Deploy PR Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# If someone pushes three commits quickly, cancel the older runs.
+# Without this, three deploys race each other into the same namespace
+# and whichever finishes last wins — which may not be the newest commit.
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write   # REQUIRED for Workload Identity Federation
+  pull-requests: write
+
+env:
+  PROJECT_ID: aminalawal
+  REGION: europe-west2
+  CLUSTER_NAME: pr-preview-cluster
+  CLUSTER_ZONE: europe-west2-a
+  REPOSITORY: pr-preview
+  IMAGE_NAME: preview-app
+
+jobs:
+  deploy:
+    name: Build and deploy preview
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set environment variables
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          SHORT_SHA=$(echo "${{ github.event.pull_request.head.sha }}" | cut -c1-7)
+
+          echo "PR_NUMBER=${PR_NUMBER}"   >> $GITHUB_ENV
+          echo "SHORT_SHA=${SHORT_SHA}"   >> $GITHUB_ENV
+          echo "NAMESPACE=pr-${PR_NUMBER}" >> $GITHUB_ENV
+          echo "IMAGE_TAG=pr-${PR_NUMBER}-${SHORT_SHA}" >> $GITHUB_ENV
+          echo "IMAGE_BASE=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}" >> $GITHUB_ENV
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        run: |
+          docker build \
+            --build-arg PR_NUMBER="${PR_NUMBER}" \
+            --build-arg GIT_SHA="${SHORT_SHA}" \
+            -t "${IMAGE_BASE}:${IMAGE_TAG}" \
+            ./app
+
+          docker push "${IMAGE_BASE}:${IMAGE_TAG}"
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.CLUSTER_NAME }}
+          location: ${{ env.CLUSTER_ZONE }}
+
+      - name: Create namespace
+        run: |
+          # --dry-run=client | apply makes this idempotent.
+          # Running it on an existing namespace is a no-op, not an error.
+          kubectl create namespace "${NAMESPACE}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Generate Kustomize overlay
+        run: |
+          mkdir -p k8s/overlays/"${NAMESPACE}"
+          cat > k8s/overlays/"${NAMESPACE}"/kustomization.yaml <<EOF
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+
+          namespace: ${NAMESPACE}
+
+          resources:
+            - ../../base
+
+          images:
+            - name: preview-app
+              newName: ${IMAGE_BASE}
+              newTag: ${IMAGE_TAG}
+          EOF
+
+          echo "--- Rendered manifest ---"
+          kubectl kustomize k8s/overlays/"${NAMESPACE}"
+
+      - name: Deploy
+        run: kubectl apply -k k8s/overlays/"${NAMESPACE}"
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/preview-app \
+            --namespace="${NAMESPACE}" \
+            --timeout=180s
+
+      - name: Show deployment details
+        run: |
+          echo "Namespace: ${NAMESPACE}"
+          kubectl get pods,svc --namespace="${NAMESPACE}"
