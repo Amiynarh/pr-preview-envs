@@ -1,0 +1,100 @@
+name: Reap Orphaned Preview Environments
+
+on:
+  schedule:
+    # 03:00 UTC daily
+    - cron: '0 3 * * *'
+  # Allow manual runs from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: read
+
+env:
+  PROJECT_ID: aminalawal
+  CLUSTER_NAME: pr-preview-cluster
+  CLUSTER_ZONE: europe-west2-a
+  # Delete environments older than this even if the PR is still open
+  MAX_AGE_DAYS: 7
+
+jobs:
+  reap:
+    name: Delete orphaned namespaces
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: ${{ env.CLUSTER_NAME }}
+          location: ${{ env.CLUSTER_ZONE }}
+
+      - name: Reap
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          echo "Fetching open pull requests..."
+          OPEN_PRS=$(gh pr list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --limit 500 \
+            --json number \
+            --jq '.[].number')
+
+          echo "Open PRs: ${OPEN_PRS:-none}"
+          echo ""
+
+          # Only consider namespaces we created ourselves.
+          NAMESPACES=$(kubectl get namespaces \
+            -l app.kubernetes.io/managed-by=pr-preview \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.labels.preview\.pr}{"\t"}{.metadata.creationTimestamp}{"\n"}{end}')
+
+          if [ -z "${NAMESPACES}" ]; then
+            echo "No preview namespaces found. Nothing to do."
+            exit 0
+          fi
+
+          NOW=$(date -u +%s)
+          MAX_AGE_SECONDS=$(( MAX_AGE_DAYS * 86400 ))
+          DELETED=0
+
+          while IFS=$'\t' read -r NS PR_NUM CREATED; do
+            [ -z "${NS}" ] && continue
+
+            CREATED_EPOCH=$(date -u -d "${CREATED}" +%s)
+            AGE=$(( NOW - CREATED_EPOCH ))
+            AGE_DAYS=$(( AGE / 86400 ))
+
+            REASON=""
+
+            # Rule 1: the PR is no longer open
+            if ! echo "${OPEN_PRS}" | grep -qx "${PR_NUM}"; then
+              REASON="PR #${PR_NUM} is not open"
+            # Rule 2: the environment has outlived MAX_AGE_DAYS
+            elif [ "${AGE}" -gt "${MAX_AGE_SECONDS}" ]; then
+              REASON="environment is ${AGE_DAYS} days old (max ${MAX_AGE_DAYS})"
+            fi
+
+            if [ -n "${REASON}" ]; then
+              echo "DELETING ${NS} — ${REASON}"
+              kubectl delete namespace "${NS}" \
+                --ignore-not-found=true \
+                --wait=false
+              DELETED=$(( DELETED + 1 ))
+            else
+              echo "KEEPING  ${NS} — PR #${PR_NUM} open, ${AGE_DAYS}d old"
+            fi
+          done <<< "${NAMESPACES}"
+
+          echo ""
+          echo "Reaped ${DELETED} namespace(s)."

@@ -24,3 +24,9 @@ output "service_account_email" {
 output "get_credentials_command" {
   value = "gcloud container clusters get-credentials ${google_container_cluster.primary.name} --zone ${var.zone} --project ${var.project_id}"
 }
+
+output "ingress_ip" {
+  description = "Point your wildcard DNS record at this address"
+  value       = google_compute_address.ingress.address
+}
+

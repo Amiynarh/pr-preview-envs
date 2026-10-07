@@ -26,6 +26,7 @@ resource "google_project_service" "apis" {
     "artifactregistry.googleapis.com",
     "iamcredentials.googleapis.com",
     "sts.googleapis.com",
+    "compute.googleapis.com",
   ])
 
   service            = each.value
@@ -156,3 +157,13 @@ resource "google_service_account_iam_member" "github_impersonation" {
 }
 
 
+# -----------------------------------------------------------
+# Static external IP for the Ingress controller
+# -----------------------------------------------------------
+resource "google_compute_address" "ingress" {
+  name         = "pr-preview-ingress-ip"
+  region       = var.region
+  address_type = "EXTERNAL"
+
+  depends_on = [google_project_service.apis]
+}

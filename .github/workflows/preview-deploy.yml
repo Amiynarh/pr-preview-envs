@@ -23,6 +23,8 @@ env:
   CLUSTER_ZONE: europe-west2-a
   REPOSITORY: pr-preview
   IMAGE_NAME: preview-app
+  PREVIEW_DOMAIN: preview.aminalawal.com
+  CLUSTER_ISSUER: letsencrypt-staging
 
 jobs:
   deploy:
@@ -43,6 +45,7 @@ jobs:
           echo "NAMESPACE=pr-${PR_NUMBER}" >> $GITHUB_ENV
           echo "IMAGE_TAG=pr-${PR_NUMBER}-${SHORT_SHA}" >> $GITHUB_ENV
           echo "IMAGE_BASE=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}" >> $GITHUB_ENV
+          echo "PREVIEW_HOST=pr-${PR_NUMBER}.${{ env.PREVIEW_DOMAIN }}" >> $GITHUB_ENV
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
@@ -79,6 +82,18 @@ jobs:
           kubectl create namespace "${NAMESPACE}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+          # Label: so the reaper knows this namespace is ours
+          kubectl label namespace "${NAMESPACE}" \
+            app.kubernetes.io/managed-by=pr-preview \
+            preview.pr="${PR_NUMBER}" \
+            --overwrite
+
+      # Apply the quota and limits before anything deploys
+      - name: Apply namespace guardrails
+        run: |
+          kubectl apply -f k8s/cluster/namespace-guardrails.yaml \
+            --namespace="${NAMESPACE}"
+
       - name: Generate Kustomize overlay
         run: |
           mkdir -p k8s/overlays/"${NAMESPACE}"
@@ -95,6 +110,21 @@ jobs:
             - name: preview-app
               newName: ${IMAGE_BASE}
               newTag: ${IMAGE_TAG}
+
+          patches:
+            - target:
+                kind: Ingress
+                name: preview-app
+              patch: |-
+                - op: replace
+                  path: /spec/rules/0/host
+                  value: ${PREVIEW_HOST}
+                - op: replace
+                  path: /spec/tls/0/hosts/0
+                  value: ${PREVIEW_HOST}
+                - op: replace
+                  path: /metadata/annotations/cert-manager.io~1cluster-issuer
+                  value: ${CLUSTER_ISSUER}
           EOF
 
           echo "--- Rendered manifest ---"
@@ -109,7 +139,63 @@ jobs:
             --namespace="${NAMESPACE}" \
             --timeout=180s
 
+      # Wait for the TLS certificate to be issued
+      - name: Wait for certificate
+        continue-on-error: true
+        run: |
+          echo "Waiting for TLS certificate for ${PREVIEW_HOST}..."
+          kubectl wait certificate/preview-app-tls \
+            --namespace="${NAMESPACE}" \
+            --for=condition=Ready \
+            --timeout=180s
+
       - name: Show deployment details
         run: |
-          echo "Namespace: ${NAMESPACE}"
-          kubectl get pods,svc --namespace="${NAMESPACE}"
+          echo "Preview URL: https://${PREVIEW_HOST}"
+          kubectl get pods,svc,ingress,certificate --namespace="${NAMESPACE}"
+
+      - name: Comment preview URL on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const host = process.env.PREVIEW_HOST;
+            const sha = process.env.SHORT_SHA;
+            const ns = process.env.NAMESPACE;
+
+            // A hidden marker so we can find our own comment later
+            const marker = '<!-- pr-preview-environment -->';
+
+            const body = [
+              marker,
+              '### Preview environment is ready',
+              '',
+              `**https://${host}**`,
+              '',
+              `Commit \`${sha}\` · Namespace \`${ns}\``,
+              '',
+              '<sub>This environment updates on every push and is deleted when the PR closes.</sub>',
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c => c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

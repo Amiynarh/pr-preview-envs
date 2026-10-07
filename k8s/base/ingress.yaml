@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: preview-app
+  annotations:
+    # Tells cert-manager to request a certificate for the hosts
+    # listed under spec.tls, using this ClusterIssuer.
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+    # Redirect HTTP to HTTPS once the certificate exists.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - preview-host-placeholder
+      secretName: preview-app-tls
+  rules:
+    - host: preview-host-placeholder
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: preview-app
+                port:
+                  number: 80
